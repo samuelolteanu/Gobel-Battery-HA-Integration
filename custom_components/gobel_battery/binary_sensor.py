@@ -56,6 +56,8 @@ async def async_setup_entry(
     
     # Track registered pack IDs
     registered_packs = set()
+    # Per pack: cell indexes that already have a balancing sensor
+    registered_balancing = {}
 
     @callback
     def async_add_pack_binary_sensors():
@@ -83,6 +85,15 @@ async def async_setup_entry(
                     )
             registered_packs.add(pack_id)
             
+        # Per-cell balancing sensors: created as soon as the parser reports them
+        for pack in warning_packs:
+            pack_id = pack.get("pack_id", 0)
+            registered_cells = registered_balancing.setdefault(pack_id, set())
+            for cell_idx in range(1, len(pack.get("cell_balancing", [])) + 1):
+                if cell_idx not in registered_cells:
+                    new_entities.append(GobelBatteryCellBalancingBinarySensor(coordinator, pack_id, cell_idx))
+                    registered_cells.add(cell_idx)
+
         if new_entities:
             async_add_entities(new_entities, update_before_add=True)
 
@@ -147,3 +158,50 @@ class GobelBatteryBinarySensor(CoordinatorEntity, BinarySensorEntity):
         # Return boolean value of warning/protection key
         val = sub_data.get(self._key, False)
         return bool(val)
+
+
+class GobelBatteryCellBalancingBinarySensor(CoordinatorEntity, BinarySensorEntity):
+    """Binary sensor: is this single cell being balanced right now (passive or active)."""
+
+    def __init__(self, coordinator, pack_id, cell_index):
+        """Initialize cell balancing sensor."""
+        super().__init__(coordinator)
+        self.pack_id = pack_id
+        self.cell_index = cell_index
+        display_pack = pack_id + (0 if coordinator.jk_display_index_start == "00" else 1)
+
+        self._attr_name = f"{coordinator.device_name} Pack {display_pack:02d} Cell {cell_index:02d} Balancing"
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_pack_{pack_id}_cell_{cell_index}_balancing"
+        self._attr_icon = "mdi:scale-balance"
+
+    @property
+    def device_info(self):
+        """Return device info for individual pack child device."""
+        display_pack = self.pack_id + (0 if self.coordinator.jk_display_index_start == "00" else 1)
+        return {
+            "identifiers": {(DOMAIN, f"{self.coordinator.entry.entry_id}_pack_{self.pack_id}")},
+            "name": f"{self.coordinator.device_name} Pack {display_pack:02d}",
+            "via_device": (DOMAIN, f"{self.coordinator.entry.entry_id}_total"),
+        }
+
+    def _pack_warnings(self):
+        data = self.coordinator.data
+        if not data:
+            return None
+        return next((p for p in data.get("warning", []) if p.get("pack_id") == self.pack_id), None)
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available."""
+        return super().available and self._pack_warnings() is not None
+
+    @property
+    def is_on(self):
+        """Return True if this cell is currently balancing."""
+        pack_warnings = self._pack_warnings()
+        if not pack_warnings:
+            return None
+        cells = pack_warnings.get("cell_balancing", [])
+        if self.cell_index - 1 < len(cells):
+            return bool(cells[self.cell_index - 1])
+        return None
