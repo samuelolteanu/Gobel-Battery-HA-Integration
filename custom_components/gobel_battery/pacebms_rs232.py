@@ -852,6 +852,16 @@ class PACEBMS232:
         else:
             return 'unknown'
     
+    def balancing_cells(self, byte_1, byte_2, num_cells):
+        """
+        Decode the two balancing bytes into one bool per cell.
+        byte_1 = cells 1-8, byte_2 = cells 9-16 (protocol tables A.16 / active balancing bytes).
+        Bit 0 = first cell of the byte (bit order as used by the working addon).
+        Returns a list of length num_cells (max 16); True = that cell is balancing.
+        """
+        bits = [bool(byte_1 & (1 << i)) for i in range(8)] + [bool(byte_2 & (1 << i)) for i in range(8)]
+        return bits[:min(num_cells, 16)]
+
     def parse_warnstate_V1(self, warnstate):
         warnstate_bytes = bytes.fromhex(warnstate)
         index = 0
@@ -971,6 +981,11 @@ class PACEBMS232:
             pack_info['balancing_status_passive_2'] = passive_bal_2
             pack_info['balancing_status_active_1'] = 0
             pack_info['balancing_status_active_2'] = 0
+
+            # Per-cell balancing (V1 has no active balancing bytes)
+            pack_info['cell_balancing_passive'] = self.balancing_cells(passive_bal_1, passive_bal_2, cell_number)
+            pack_info['cell_balancing_active'] = [False] * len(pack_info['cell_balancing_passive'])
+            pack_info['cell_balancing'] = list(pack_info['cell_balancing_passive'])
 
 
             # Detailed interpretation for Warn State 1 based on Char A.24
@@ -1224,6 +1239,12 @@ class PACEBMS232:
             pack_info['balancing_status_active_1'] = get_balancing_cell(active_bal_1, 1)
             pack_info['balancing_status_active_2'] = get_balancing_cell(active_bal_2, 9)
 
+            # Per-cell balancing: the two *_active_* values above only report the FIRST
+            # balancing cell of each byte, so decode the full bitmasks here instead.
+            pack_info['cell_balancing_passive'] = self.balancing_cells(passive_bal_1, passive_bal_2, cell_number)
+            pack_info['cell_balancing_active'] = self.balancing_cells(active_bal_1, active_bal_2, cell_number)
+            pack_info['cell_balancing'] = [p or a for p, a in zip(pack_info['cell_balancing_passive'], pack_info['cell_balancing_active'])]
+
             if remaining_w > 0:
                 index += remaining_w
     
@@ -1262,6 +1283,9 @@ class PACEBMS232:
                 'balancing_status_passive_2': pack['balancing_status_passive_2'],
                 'balancing_status_active_1': pack['balancing_status_active_1'],
                 'balancing_status_active_2': pack['balancing_status_active_2'],
+                'cell_balancing_passive': pack['cell_balancing_passive'],
+                'cell_balancing_active': pack['cell_balancing_active'],
+                'cell_balancing': pack['cell_balancing'],
                 'warn_state_1': pack['warn_state_1'],
                 'warn_state_2': pack['warn_state_2']
             }
@@ -2004,6 +2028,15 @@ class PACEBMS232:
                     for sub_key, sub_value in value.items():
                         self.ha_comm.publish_binary_sensor_state(sub_value, f"pack_{pack_i:02}_{sub_key}")
                         self.ha_comm.publish_binary_sensor_discovery(f"pack_{pack_i:02}_{sub_key}",icon)
+                elif key == 'cell_balancing':
+                    # One binary sensor per cell: pack_01_cell_01_balancing ... (passive OR active)
+                    icon = "mdi:scale-balance"
+                    for cell_i, is_balancing in enumerate(value, start=1):
+                        sensor_name = f"pack_{pack_i:02}_cell_{cell_i:02}_balancing"
+                        self.ha_comm.publish_binary_sensor_state(is_balancing, sensor_name)
+                        self.ha_comm.publish_binary_sensor_discovery(sensor_name, icon)
+                elif key in ('cell_balancing_passive', 'cell_balancing_active'):
+                    continue  # only the combined per-cell state is published
                 elif key in ('balancing_status_passive_1', 'balancing_status_passive_2', 'balancing_status_active_1', 'balancing_status_active_2'):
                     icon = "mdi:scale-balance"
                     self.ha_comm.publish_warn_state(value, f"pack_{pack_i:02}_{key}")
