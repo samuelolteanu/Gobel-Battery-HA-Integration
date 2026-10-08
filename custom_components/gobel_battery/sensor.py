@@ -77,6 +77,14 @@ SENSOR_METADATA = {
     },
 }
 
+def _temperature_present(value) -> bool:
+    """False for missing readings and for the protocol's "no such probe" marker.
+
+    A probe reported as 0x8000 (0.1 K units) decodes to ~3003 degC, which is never real.
+    """
+    return value is not None and value < 1000
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ):
@@ -102,67 +110,69 @@ async def async_setup_entry(
     for key, name, unit, dev_class, state_class, icon in overall_sensors:
         initial_entities.append(GobelBatteryOverallSensor(coordinator, key, name, unit, dev_class, state_class, icon))
 
-    # Track registered pack IDs
-    registered_packs = set()
+    # Per pack: what has been registered so far. Cells/temperatures are added as
+    # soon as the BMS reports them, so a pack that was first registered from the
+    # placeholder below (before any data arrived) still gets all of its sensors.
+    registered_packs = {}
 
     @callback
     def async_add_pack_sensors():
-        """Add sensors for newly discovered packs."""
+        """Add sensors for newly discovered packs, cells and temperature probes."""
         data = coordinator.data
         analog_packs = data.get("analog", []) if data else []
-        
+
         # Default to pack 0 if no packs are detected yet so entities are visible
         if not analog_packs and not registered_packs:
-            pack_ids_to_add = [0]
+            targets = [(0, None)]
         else:
-            pack_ids_to_add = [p.get("pack_id", 0) for p in analog_packs if p.get("pack_id", 0) not in registered_packs]
+            targets = [(p.get("pack_id", 0), p) for p in analog_packs]
 
         new_entities = []
-        for pack_id in pack_ids_to_add:
-            if pack_id in registered_packs:
-                continue
-                
-            num_cells = 16
-            num_temps = 4
-            
-            # Count cells and temps from matching pack data if available
-            pack_data = next((p for p in analog_packs if p.get("pack_id") == pack_id), None)
-            if pack_data:
-                num_cells = len(pack_data.get("cell_voltages", []))
-                num_temps = len(pack_data.get("temperatures", []))
+        for pack_id, pack_data in targets:
+            state = registered_packs.setdefault(pack_id, {"metrics": False, "cells": set(), "temps": set()})
 
-            # Add predefined metrics (SOC, SOH, Voltage, Current, Cycle Count, etc.)
-            for metric, meta in SENSOR_METADATA.items():
-                # Only JK BMS supports balance current telemetry
-                if metric == "balance_current" and coordinator.bms_type != BMS_TYPE_JK_PB:
-                    continue
-                    
-                new_entities.append(
-                    GobelBatteryPackSensor(
-                        coordinator,
-                        pack_id,
-                        metric,
-                        meta["name"],
-                        meta["unit"],
-                        meta["device_class"],
-                        meta["state_class"],
-                        meta["icon"],
+            # Predefined metrics (SOC, SOH, Voltage, Current, Cycle Count, etc.) - once per pack
+            if not state["metrics"]:
+                for metric, meta in SENSOR_METADATA.items():
+                    # Only JK BMS supports balance current telemetry
+                    if metric == "balance_current" and coordinator.bms_type != BMS_TYPE_JK_PB:
+                        continue
+                    new_entities.append(
+                        GobelBatteryPackSensor(
+                            coordinator,
+                            pack_id,
+                            metric,
+                            meta["name"],
+                            meta["unit"],
+                            meta["device_class"],
+                            meta["state_class"],
+                            meta["icon"],
+                        )
                     )
-                )
+                state["metrics"] = True
 
-            # Add cell voltage sensors (Cell 01 Voltage ... Cell N Voltage)
-            for cell_idx in range(1, num_cells + 1):
-                new_entities.append(
-                    GobelBatteryCellVoltageSensor(coordinator, pack_id, cell_idx)
-                )
+            if pack_data:
+                cell_indexes = range(1, len(pack_data.get("cell_voltages", [])) + 1)
+                # Skip probes the BMS marks as "not present" (raw 0x8000)
+                temp_indexes = [
+                    i for i, t in enumerate(pack_data.get("temperatures", []), start=1)
+                    if _temperature_present(t)
+                ]
+            else:
+                cell_indexes = range(1, 17)
+                temp_indexes = range(1, 5)
 
-            # Add temperature sensors (Temperature 01 ... Temperature N)
-            for temp_idx in range(1, num_temps + 1):
-                new_entities.append(
-                    GobelBatteryTemperatureSensor(coordinator, pack_id, temp_idx)
-                )
-                
-            registered_packs.add(pack_id)
+            # Cell voltage sensors (Cell 01 Voltage ... Cell N Voltage)
+            for cell_idx in cell_indexes:
+                if cell_idx not in state["cells"]:
+                    new_entities.append(GobelBatteryCellVoltageSensor(coordinator, pack_id, cell_idx))
+                    state["cells"].add(cell_idx)
+
+            # Temperature sensors (Temperature 01 ... Temperature N)
+            for temp_idx in temp_indexes:
+                if temp_idx not in state["temps"]:
+                    new_entities.append(GobelBatteryTemperatureSensor(coordinator, pack_id, temp_idx))
+                    state["temps"].add(temp_idx)
 
         if new_entities:
             async_add_entities(new_entities, update_before_add=True)
@@ -436,6 +446,7 @@ class GobelBatteryTemperatureSensor(CoordinatorEntity, SensorEntity):
 
         temps = pack_data.get("temperatures", [])
         if self.temp_index - 1 < len(temps):
-            return temps[self.temp_index - 1]
+            value = temps[self.temp_index - 1]
+            return value if _temperature_present(value) else None
 
         return None
