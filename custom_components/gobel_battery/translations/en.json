@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Gobel Battery",
+        "data": {
+          "device_name": "Device name",
+          "bms_type": "BMS type",
+          "connection_type": "Connection type",
+          "battery_port": "Battery port",
+          "poll_interval": "Poll interval (s)",
+          "max_parallel_allowed": "Max parallel packs",
+          "jk_display_index_start": "JK display index start"
+        }
+      },
+      "serial": {
+        "data": { "usb_port": "Serial port", "baud_rate": "Baud rate" }
+      },
+      "network": {
+        "data": { "ip_address": "IP address", "ip_port": "Port" }
+      },
+      "reconfigure": {
+        "title": "Change connection",
+        "description": "Pick the new serial port (prefer /dev/serial/by-id/...). Entities and devices are kept.",
+        "data": {
+          "usb_port": "Serial port",
+          "baud_rate": "Baud rate",
+          "ip_address": "IP address",
+          "ip_port": "Port",
+          "poll_interval": "Poll interval (s)"
+        }
+      }
+    },
+    "error": { "port_not_found": "That path does not exist on this system" },
+    "abort": {
+      "already_configured": "Already configured",
+      "reconfigure_successful": "Connection updated, reloading"
+    }
+  }
+}

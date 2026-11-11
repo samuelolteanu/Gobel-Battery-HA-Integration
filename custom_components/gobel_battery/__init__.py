@@ -2,6 +2,7 @@
 import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
 
@@ -48,3 +49,29 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         await hass.async_add_executor_job(coordinator.shutdown)
 
     return unload_ok
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device_entry: DeviceEntry
+) -> bool:
+    """Allow deleting stale pack devices (e.g. ghost packs left by a port swap).
+
+    A pack device may be removed only if the BMS is not currently reporting it.
+    The "Total" device is never removable.
+    """
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    data = (coordinator.data if coordinator else None) or {}
+    active = {
+        str(item.get("pack_id", i))
+        for key in ("analog", "warning")
+        for i, item in enumerate(data.get(key, []) or [])
+    }
+    prefix = f"{entry.entry_id}_pack_"
+    for domain, ident in device_entry.identifiers:
+        if domain != DOMAIN:
+            continue
+        if ident == f"{entry.entry_id}_total":
+            return False
+        if ident.startswith(prefix) and ident[len(prefix):] in active:
+            return False
+    return True

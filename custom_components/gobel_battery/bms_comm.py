@@ -1,6 +1,7 @@
 import serial
 import socket
 import logging
+import time
 
 class BMSCommunication:
     def __init__(self, interface='serial', serial_port=None, baud_rate=None, ethernet_ip=None, ethernet_port=None,buffer_size=1024,debug=0):
@@ -12,6 +13,8 @@ class BMSCommunication:
         self.buffer_size = buffer_size
         self.bms_connection = None
         self._tcp_buffer = b''
+        self._last_reconnect_attempt = 0.0
+        self.reconnect_interval = 10.0  # seconds between reconnect attempts
 
         # Configure logging
         logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
@@ -66,7 +69,21 @@ class BMSCommunication:
             # Set connection to None after closing it.
             self.bms_connection = None
         else:
-            self.logger.warning("No active connection to disconnect.")
+            self.logger.debug("No active connection to disconnect.")
+
+    @property
+    def is_connected(self):
+        return self.bms_connection is not None
+
+    def try_reconnect(self):
+        """Rate-limited reconnect. Returns True if a connection is available."""
+        if self.bms_connection:
+            return True
+        now = time.monotonic()
+        if now - self._last_reconnect_attempt < self.reconnect_interval:
+            return False
+        self._last_reconnect_attempt = now
+        return bool(self.connect())
 
 
 
@@ -96,7 +113,7 @@ class BMSCommunication:
         except Exception as e:
             self.logger.error(f"Error sending data to BMS: {e}")
             self.disconnect()
-            self.connect()
+            self.try_reconnect()
             return False
 
     def receive_data(self, return_raw=False):

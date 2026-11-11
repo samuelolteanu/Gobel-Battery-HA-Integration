@@ -166,6 +166,13 @@ class GobelBatteryUpdateCoordinator(DataUpdateCoordinator):
         if not self.bms:
             raise UpdateFailed("BMS driver is not set up")
 
+        # Port vanished (USB re-enumeration, passthrough swap...): retry quietly
+        # at a fixed interval instead of hammering open() on every request.
+        if self.bms_comm and not self.bms_comm.try_reconnect():
+            raise UpdateFailed(
+                f"Port {self.usb_port or self.ip_address} not available, retrying"
+            )
+
         # Determine pack indices to query
         pack_list = []
         if self.bms_type == BMS_TYPE_PACE_LV and self.battery_port == "rs485":
